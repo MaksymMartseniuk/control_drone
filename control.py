@@ -4,6 +4,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 import threading
 from px4_msgs.msg import OffboardControlMode, VehicleRatesSetpoint, VehicleCommand
+from pathlib import Path
 
 if sys.platform == 'win32':
     import msvcrt
@@ -25,9 +26,6 @@ Q: Перехід в режим Offboard (ПОТРІБНО ПІСЛЯ ARM)
 
 CTRL-C: Вихід
 """
-
-
-
 
 def get_key():
     if sys.platform == 'win32':
@@ -103,6 +101,24 @@ class DroneTeleopNode(Node):
         self.key_listener_thread = threading.Thread(target=self.key_listener)
         self.key_listener_thread.daemon = True
         self.key_listener_thread.start()
+
+        self.path = Path.home() / "drone_missions"
+        self.file_ext = '.kml'
+        if not self.path.exists():
+            self.path.mkdir(parents=True, exist_ok=True)
+        
+        threading.Thread(target=self.scan_missions_once, daemon=True).start()
+
+    def scan_missions_once(self):
+        try:
+            files = [file for file in self.path.iterdir() if file.is_file() and file.suffix == self.file_ext]
+            if files:
+                for file in files:
+                    self.get_logger().info(f"Found mission file: {file.name}")
+            else:
+                self.get_logger().info("No existing mission files found.")
+        except Exception as e:
+            self.get_logger().error(f"Error accessing mission files: {e}")
 
     def key_listener(self):
         try:
@@ -206,6 +222,20 @@ class DroneTeleopNode(Node):
         
         status_str = "ARMED" if arm else "DISARMED"
         self.get_logger().info(f"--- Drone {status_str} ---")
+
+    def public_set_offboard(self):
+        msg = VehicleCommand()
+        msg.command = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
+        msg.param1 = 1  
+        msg.param2 = 6  
+        msg.target_system = 1
+        msg.target_component = 1
+        msg.source_system = 255
+        msg.source_component = 1
+        msg.from_external = True
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.cmd_publisher_.publish(msg)
+        self.get_logger().info("--- OFFBOARD COMMAND SENT ---")
 
 
 def main(args=None):
