@@ -12,6 +12,7 @@ else:
     import termios
 
 
+
 msg = """
 Керування PX4 Offboard!
 ---------------------------
@@ -22,9 +23,11 @@ A/D: Yaw (Поворот вліво/вправо)
 Space: Arm / Disarm
 Q: Перехід в режим Offboard (ПОТРІБНО ПІСЛЯ ARM)
 
-Будь-яка інша клавіша (e.g., 'x'): Зупинка (всі швидкості 0)
 CTRL-C: Вихід
 """
+
+
+
 
 def get_key():
     if sys.platform == 'win32':
@@ -92,7 +95,7 @@ class DroneTeleopNode(Node):
         self.target_pitch_rate = 0.0
         self.target_yaw_rate = 0.0
 
-        self.timer_period = 0.1
+        self.timer_period = 0.01
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
 
         self.get_logger().info(msg)
@@ -103,6 +106,16 @@ class DroneTeleopNode(Node):
 
     def key_listener(self):
         try:
+            key_actions = {
+                'w':lambda:setattr(self, 'throttle_target', min(1.0, self.throttle_target + self.throttle_step)),
+                's':lambda:setattr(self, 'throttle_target', max(0.0, self.throttle_target - self.throttle_step)),
+                'a':lambda:setattr(self, 'target_yaw_rate', min(2.0, self.target_yaw_rate + self.rate_step)),
+                'd':lambda:setattr(self, 'target_yaw_rate', max(-2.0, self.target_yaw_rate - self.rate_step)),
+                '\x1b[A':lambda:setattr(self, 'target_pitch_rate', max(-1.5, self.target_pitch_rate - self.rate_step)),  # arrow up
+                '\x1b[B':lambda:setattr(self, 'target_pitch_rate', min(1.5, self.target_pitch_rate + self.rate_step)),  # arrow down
+                '\x1b[C':lambda:setattr(self, 'target_roll_rate', min(1.5, self.target_roll_rate + self.rate_step)),  # arrow right
+                '\x1b[D':lambda:setattr(self, 'target_roll_rate', max(-1.5, self.target_roll_rate - self.rate_step)),  # arrow left
+                }
             while rclpy.ok():
                 key = get_key()
 
@@ -127,38 +140,24 @@ class DroneTeleopNode(Node):
                     continue
 
                 if self.arm_state and self.offboard_state:
-                    if key.lower() == 'w':
-                        self.throttle_target = min(1.0, self.throttle_target + self.throttle_step)
-                    elif key.lower() == 's':
-                        self.throttle_target = max(0.0, self.throttle_target - self.throttle_step)
-                    elif key.lower() == 'a':
-                        self.target_yaw_rate = min(2.0, self.target_yaw_rate + self.rate_step)
-                    elif key.lower() == 'd':
-                        self.target_yaw_rate = max(-2.0, self.target_yaw_rate - self.rate_step)
-                    elif key == '\x1b[A':  # arrow up
-                        self.target_pitch_rate = max(-1.5, self.target_pitch_rate - self.rate_step)
-                    elif key == '\x1b[B':  # arrow down
-                        self.target_pitch_rate = min(1.5, self.target_pitch_rate + self.rate_step)
-                    elif key == '\x1b[C':  # arrow right
-                        self.target_roll_rate = min(1.5, self.target_roll_rate + self.rate_step)
-                    elif key == '\x1b[D':  # arrow left
-                        self.target_roll_rate = max(-1.5, self.target_roll_rate - self.rate_step)
-                    else:
-                        self.throttle_target = 0.0
-                        self.target_roll_rate = 0.0
-                        self.target_pitch_rate = 0.0
-                        self.target_yaw_rate = 0.0
+                    if key in key_actions:
+                        action=key_actions.get(key.lower())
+                        if action:
+                            action()
                 else:
-                    self.throttle_target = 0.0
-                    self.target_roll_rate = 0.0
-                    self.target_pitch_rate = 0.0
-                    self.target_yaw_rate = 0.0
+                    self.reset_target()
 
                 self.print_status_on_one_line()
 
         except Exception as e:
             if rclpy.ok():
                 self.get_logger().error(f"Exception in key_listener: {e}")
+
+    def reset_target(self):
+        self.throttle_target = 0.0
+        self.target_roll_rate = 0.0
+        self.target_pitch_rate = 0.0
+        self.target_yaw_rate = 0.0
 
     def timer_callback(self):
             if not rclpy.ok():
