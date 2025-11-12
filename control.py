@@ -150,14 +150,14 @@ class DroneTeleopNode(Node):
                 if key.lower() == 'q':
                     if self.arm_state:
                         self.offboard_state = True
-                        self.get_logger().info("--- OFFBOARD MODE ENGAGED ---")
+                        self.public_set_offboard()
                     else:
                         self.get_logger().warn("Cannot enter OFFBOARD mode. Drone is not armed.")
                     continue
 
                 if self.arm_state and self.offboard_state:
                     if key in key_actions:
-                        action=key_actions.get(key.lower())
+                        action=key_actions.get(key) or key_actions.get(key.lower())
                         if action:
                             action()
                 else:
@@ -226,8 +226,8 @@ class DroneTeleopNode(Node):
     def public_set_offboard(self):
         msg = VehicleCommand()
         msg.command = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
-        msg.param1 = 1  
-        msg.param2 = 6  
+        msg.param1 = 1.0  
+        msg.param2 = 6.0  
         msg.target_system = 1
         msg.target_component = 1
         msg.source_system = 255
