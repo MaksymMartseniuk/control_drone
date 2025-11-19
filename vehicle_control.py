@@ -53,9 +53,10 @@ class VehicleControlNode(Node):
             qos_best_effort
         )
         # ---Server---
-        self.takeoff_service=self.create_service(TakeOff,'takeoff_command/drone',
-                                                 self.takeoff_callback,
-                                                 )
+        self.takeoff_service=self.create_service(
+            TakeOff,
+            'takeoff_command/drone',
+            self.takeoff_callback,)
         # ---State---
         self.arm_state = False
         self.offboard_state = False
@@ -64,7 +65,6 @@ class VehicleControlNode(Node):
 
         self.offboard_setpoint_counter = 0
         self.offboard_mode_sent = False
-
 
         self.current_rc_control = RCControl()
 
@@ -122,6 +122,7 @@ class VehicleControlNode(Node):
 
         timestamp = int(self.get_clock().now().nanoseconds / 1000)
 
+        # ARM/DISARM
         if self.arm_state and not self.armed_state_sent:
             self.public_arm_disarm(True)
             self.armed_state_sent = True
@@ -132,7 +133,15 @@ class VehicleControlNode(Node):
             self.offboard_setpoint_counter = 0
             self.offboard_mode_sent = False
 
+        # --- OFFBOARD LOGIC ---
         if self.offboard_state:
+            rc_nonzero = (
+                abs(self.current_rc_control.target_roll_rate) > 0.0 or
+                abs(self.current_rc_control.target_pitch_rate) > 0.0 or
+                abs(self.current_rc_control.target_yaw_rate) > 0.0 or
+                abs(self.current_rc_control.throttle_target) > 0.0
+                )
+            # Messaging mode
             offboard_msg = OffboardControlMode()
             offboard_msg.timestamp = timestamp
             offboard_msg.position = False
@@ -141,28 +150,39 @@ class VehicleControlNode(Node):
             offboard_msg.attitude = False
             offboard_msg.body_rate = False
 
-            if self.current_setpoint_height is not None:
+            # --- POSITION TAKEOFF MODE ---
+            if self.current_setpoint_height is not None and not rc_nonzero:
                 offboard_msg.position = True
+            
                 traj_msg = TrajectorySetpoint()
                 traj_msg.timestamp = timestamp
                 traj_msg.position = [0.0, 0.0, -self.current_setpoint_height]
                 traj_msg.yaw = 0.0
+
                 self.position_setpoint_publisher_.publish(traj_msg)
+
+            # --- BODY RATE MANUAL CONTROL ---
             else:
+                self.current_setpoint_height = None
                 offboard_msg.body_rate = True
+
                 rates_msg = VehicleRatesSetpoint()
                 rates_msg.timestamp = timestamp
                 rates_msg.roll = self.current_rc_control.target_roll_rate
                 rates_msg.pitch = self.current_rc_control.target_pitch_rate
                 rates_msg.yaw = self.current_rc_control.target_yaw_rate
                 rates_msg.thrust_body = [0.0, 0.0, -self.current_rc_control.throttle_target]
+
                 self.rates_setpoint_publisher_.publish(rates_msg)
 
+            # Publish OffboardControlMode every cycle
             self.offboard_mode_publisher_.publish(offboard_msg)
 
+            # Count consecutive setpoints
             if self.offboard_setpoint_counter < 50:
                 self.offboard_setpoint_counter += 1
 
+            # Send SET_MODE only after 50 valid setpoints
             if self.offboard_setpoint_counter >= 50 and not self.offboard_mode_sent:
                 self.public_set_offboard_mode()
                 self.offboard_mode_sent = True
@@ -170,6 +190,7 @@ class VehicleControlNode(Node):
         else:
             self.offboard_setpoint_counter = 0
             self.offboard_mode_sent = False
+
 
 
 
