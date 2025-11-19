@@ -75,15 +75,11 @@ class RCControlNode(Node):
             'rc_command',
             qos_reliable
         )
-        self.service_cli_group = MutuallyExclusiveCallbackGroup()
-        self.takeoff_client = self.create_client(
-            TakeOff, 
-            'takeoff_service', 
-            callback_group=self.service_cli_group
+
+        self.takeoff_client=self.create_client(
+            TakeOff,
+            'takeoff_command/drone'
         )
-
-        self.takeoff_height = 1.5
-
 
         self.arm_state = False
         self.offboard_state = False
@@ -137,6 +133,7 @@ class RCControlNode(Node):
             '\x1b[C': lambda: setattr(self, 'target_roll_rate', min(self.max_rate, self.target_roll_rate + self.rate_step)),  # arrow right
             '\x1b[D': lambda: setattr(self, 'target_roll_rate', max(-self.max_rate, self.target_roll_rate - self.rate_step)),  # arrow left
             'r': self.reset_controls,
+            't':self.takeoff_drone_command
         }
         
         try:
@@ -195,7 +192,26 @@ class RCControlNode(Node):
         )
         self.get_logger().info(status_msg)
 
-    
+    def takeoff_drone_command(self):
+        if not self.arm_state:
+            self.get_logger().error("Cannot takeoff while disarmed!")
+            return
+        if not self.takeoff_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error("TakeOff service not available!")
+            return
+        
+        req = TakeOff.Request()
+        req.target_height=5.0
+        future = self.takeoff_client.call_async(req)
+        self.get_logger().info("Sending takeoff command...")
+        def response_callback(fut):
+            try:
+                resp = fut.result()
+                self.get_logger().info(f"Takeoff success: {resp.success}, message: {resp.message}")
+            except Exception as e:
+                self.get_logger().error(f"Takeoff service call failed: {e}")
+
+        future.add_done_callback(response_callback)
 
 def main(args=None):
     old_settings = save_terminal_settings()

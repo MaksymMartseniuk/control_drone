@@ -53,36 +53,42 @@ class VehicleControlNode(Node):
             qos_best_effort
         )
         # ---Server---
-        self.service_group = MutuallyExclusiveCallbackGroup()
-        self.takeoff_server = self.create_service(
-            TakeOff, 
-            'takeoff_service', 
-            self.takeoff_callback,
-            callback_group=self.service_group
-        )
-
+        self.takeoff_service=self.create_service(TakeOff,'takeoff_command/drone',
+                                                 self.takeoff_callback,
+                                                 )
         # ---State---
         self.arm_state = False
         self.offboard_state = False
         self.armed_state_sent = False 
-        
-        self.current_rc_control = RCControl()
+        self.current_setpoint_height = None
 
-        self.is_position_control = False 
-        self.takeoff_target_height = 0.0
+
+        self.current_rc_control = RCControl()
 
         # ---Timer---    
         self.timer = self.create_timer(0.01, self.timer_callback)
         self.get_logger().info("VehicleControlNode initialized.")
         self.get_logger().info('Lidar subscriber started.')
 
+    def takeoff_callback(self, request, response):
+        if not self.arm_state:
+            response.success = False
+            response.message = "Cannot takeoff: Drone is disarmed."
+            self.get_logger().error(response.message)
+            return response
+
+        self.current_setpoint_height = request.target_height
+        self.offboard_state = True
+        response.success = True
+        response.message = f"Takeoff command sent to {self.current_setpoint_height} meters."
+        self.get_logger().info(response.message)
+        return response
+
+
     def rc_command_callback(self, msg: RCControl):
         self.current_rc_control = msg
         self.arm_state = msg.arm_state
         self.offboard_state = msg.offboard_state
-
-    def takeoff_callback(self):
-        pass
 
     def lidar_callback(self, msg: LaserScan):
         if msg.ranges:
@@ -106,22 +112,43 @@ class VehicleControlNode(Node):
     def timer_callback(self):
         if not rclpy.ok():
             return
-            
+
         timestamp = int(self.get_clock().now().nanoseconds / 1000)
 
+    # --- Offboard mode ---
         if self.offboard_state:
             offboard_msg = OffboardControlMode()
-            offboard_msg.position = False
-            offboard_msg.velocity = False
-            offboard_msg.acceleration = False
-            offboard_msg.attitude = False
-            offboard_msg.body_rate = True 
+
+            if self.current_setpoint_height is not None:
+            # TakeOff / позиційний контроль
+                offboard_msg.position = True
+                offboard_msg.velocity = False
+                offboard_msg.acceleration = False
+                offboard_msg.attitude = False
+                offboard_msg.body_rate = False
+
+            # Публікуємо TrajectorySetpoint для висоти
+                traj_msg = TrajectorySetpoint()
+                traj_msg.position = [0.0, 0.0, -self.current_setpoint_height]  # NED frame
+                traj_msg.yaw = 0.0
+                traj_msg.timestamp = timestamp
+                self.position_setpoint_publisher_.publish(traj_msg)
+
+            else:
+            # Ручне керування через body_rate
+                offboard_msg.position = False
+                offboard_msg.velocity = False
+                offboard_msg.acceleration = False
+                offboard_msg.attitude = False
+                offboard_msg.body_rate = True
+
             offboard_msg.timestamp = timestamp
             self.offboard_mode_publisher_.publish(offboard_msg)
-            
+
             if self.arm_state:
-                 self.public_set_offboard_mode()
-        
+                self.public_set_offboard_mode()
+
+    # --- Arm / Disarm ---
         if self.arm_state and not self.armed_state_sent:
             self.public_arm_disarm(True)
             self.armed_state_sent = True
@@ -129,16 +156,16 @@ class VehicleControlNode(Node):
             self.public_arm_disarm(False)
             self.armed_state_sent = False
 
-        if self.arm_state and self.offboard_state:
+    # --- Ручне керування через RC ---
+        if self.arm_state and self.offboard_state and self.current_setpoint_height is None:
             rates_msg = VehicleRatesSetpoint()
-
             rates_msg.roll = self.current_rc_control.target_roll_rate
             rates_msg.pitch = self.current_rc_control.target_pitch_rate
             rates_msg.yaw = self.current_rc_control.target_yaw_rate
             rates_msg.thrust_body[2] = -self.current_rc_control.throttle_target
-            
             rates_msg.timestamp = timestamp
             self.rates_setpoint_publisher_.publish(rates_msg)
+
 
     def public_arm_disarm(self, arm: bool):
         msg = VehicleCommand()
