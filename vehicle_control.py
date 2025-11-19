@@ -62,6 +62,9 @@ class VehicleControlNode(Node):
         self.armed_state_sent = False 
         self.current_setpoint_height = None
 
+        self.offboard_setpoint_counter = 0
+        self.offboard_mode_sent = False
+
 
         self.current_rc_control = RCControl()
 
@@ -88,6 +91,10 @@ class VehicleControlNode(Node):
     def rc_command_callback(self, msg: RCControl):
         self.current_rc_control = msg
         self.arm_state = msg.arm_state
+
+        if not msg.offboard_state and self.offboard_state:
+             self.current_setpoint_height = None
+        
         self.offboard_state = msg.offboard_state
 
     def lidar_callback(self, msg: LaserScan):
@@ -115,56 +122,55 @@ class VehicleControlNode(Node):
 
         timestamp = int(self.get_clock().now().nanoseconds / 1000)
 
-    # --- Offboard mode ---
-        if self.offboard_state:
-            offboard_msg = OffboardControlMode()
-
-            if self.current_setpoint_height is not None:
-            # TakeOff / позиційний контроль
-                offboard_msg.position = True
-                offboard_msg.velocity = False
-                offboard_msg.acceleration = False
-                offboard_msg.attitude = False
-                offboard_msg.body_rate = False
-
-            # Публікуємо TrajectorySetpoint для висоти
-                traj_msg = TrajectorySetpoint()
-                traj_msg.position = [0.0, 0.0, -self.current_setpoint_height]  # NED frame
-                traj_msg.yaw = 0.0
-                traj_msg.timestamp = timestamp
-                self.position_setpoint_publisher_.publish(traj_msg)
-
-            else:
-            # Ручне керування через body_rate
-                offboard_msg.position = False
-                offboard_msg.velocity = False
-                offboard_msg.acceleration = False
-                offboard_msg.attitude = False
-                offboard_msg.body_rate = True
-
-            offboard_msg.timestamp = timestamp
-            self.offboard_mode_publisher_.publish(offboard_msg)
-
-            if self.arm_state:
-                self.public_set_offboard_mode()
-
-    # --- Arm / Disarm ---
         if self.arm_state and not self.armed_state_sent:
             self.public_arm_disarm(True)
             self.armed_state_sent = True
         elif not self.arm_state and self.armed_state_sent:
             self.public_arm_disarm(False)
             self.armed_state_sent = False
+            self.offboard_state = False
+            self.offboard_setpoint_counter = 0
+            self.offboard_mode_sent = False
 
-    # --- Ручне керування через RC ---
-        if self.arm_state and self.offboard_state and self.current_setpoint_height is None:
-            rates_msg = VehicleRatesSetpoint()
-            rates_msg.roll = self.current_rc_control.target_roll_rate
-            rates_msg.pitch = self.current_rc_control.target_pitch_rate
-            rates_msg.yaw = self.current_rc_control.target_yaw_rate
-            rates_msg.thrust_body[2] = -self.current_rc_control.throttle_target
-            rates_msg.timestamp = timestamp
-            self.rates_setpoint_publisher_.publish(rates_msg)
+        if self.offboard_state:
+            offboard_msg = OffboardControlMode()
+            offboard_msg.timestamp = timestamp
+            offboard_msg.position = False
+            offboard_msg.velocity = False
+            offboard_msg.acceleration = False
+            offboard_msg.attitude = False
+            offboard_msg.body_rate = False
+
+            if self.current_setpoint_height is not None:
+                offboard_msg.position = True
+                traj_msg = TrajectorySetpoint()
+                traj_msg.timestamp = timestamp
+                traj_msg.position = [0.0, 0.0, -self.current_setpoint_height]
+                traj_msg.yaw = 0.0
+                self.position_setpoint_publisher_.publish(traj_msg)
+            else:
+                offboard_msg.body_rate = True
+                rates_msg = VehicleRatesSetpoint()
+                rates_msg.timestamp = timestamp
+                rates_msg.roll = self.current_rc_control.target_roll_rate
+                rates_msg.pitch = self.current_rc_control.target_pitch_rate
+                rates_msg.yaw = self.current_rc_control.target_yaw_rate
+                rates_msg.thrust_body = [0.0, 0.0, -self.current_rc_control.throttle_target]
+                self.rates_setpoint_publisher_.publish(rates_msg)
+
+            self.offboard_mode_publisher_.publish(offboard_msg)
+
+            if self.offboard_setpoint_counter < 50:
+                self.offboard_setpoint_counter += 1
+
+            if self.offboard_setpoint_counter >= 50 and not self.offboard_mode_sent:
+                self.public_set_offboard_mode()
+                self.offboard_mode_sent = True
+
+        else:
+            self.offboard_setpoint_counter = 0
+            self.offboard_mode_sent = False
+
 
 
     def public_arm_disarm(self, arm: bool):
