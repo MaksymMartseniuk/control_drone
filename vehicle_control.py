@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
-from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition
+from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus
 from ros_px4_my.msg import RCControl 
 from ros_px4_my.srv import TakeOff, Land
 from sensor_msgs.msg import LaserScan
@@ -46,10 +46,17 @@ class VehicleControlNode(Node):
             self.global_position_callback,
             qos_best_effort
         )
+        
+        self.vehicle_status_subscriber = self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status',
+            self.vehicle_status_callback,
+            qos_best_effort
+        )
 
         self.lidar_subscriber = self.create_subscription(
             LaserScan,
-            '/world/default/model/x_lidar_my_0/link/lidar_sensor_link/sensor/lidar/scan',
+            '/lidar_scan',
             self.lidar_callback,
             qos_best_effort
         )
@@ -69,6 +76,9 @@ class VehicleControlNode(Node):
         self.offboard_setpoint_counter = 0
         self.min_lidar_distance = float('inf')
         self.current_global_alt = 0.0
+        self.offboard_mode_allowed = True 
+        
+        self.current_nav_state = 0 
 
         self.current_rc_control = RCControl()
 
@@ -82,6 +92,9 @@ class VehicleControlNode(Node):
     def global_position_callback(self,msg:VehicleGlobalPosition):
         self.current_global_alt = msg.alt
 
+    def vehicle_status_callback(self, msg: VehicleStatus):
+        self.current_nav_state = msg.nav_state
+
     def lidar_callback(self,msg:LaserScan):
         if msg.ranges:
             valid_ranges = [r for r in msg.ranges if r > msg.range_min and r != float('inf')]
@@ -92,7 +105,7 @@ class VehicleControlNode(Node):
 
         if self.current_rc_control.arm_state:
             if 0.1 < self.min_lidar_distance < 0.5:
-                self.get_logger().warn(f"COLLISION WARNING: Object at {self.min_lidar_distance:.2f}m!")
+                self.get_logger().warn(f"COLLISION WARNING: Object at {self.min_lidar_distance:.2f}m!", throttle_duration_sec=1.0)
 
     def takeoff_callback(self,request, response):
         if not self.current_rc_control.arm_state:
@@ -119,6 +132,8 @@ class VehicleControlNode(Node):
 
         self.takeoff_start_alt = self.current_global_alt
         self.is_taking_off = True
+        
+        self.offboard_mode_allowed = False 
         self.offboard_setpoint_counter = 0
 
         self.publish_vehicle_command(
@@ -133,8 +148,27 @@ class VehicleControlNode(Node):
         self.get_logger().info(response.message)
         return response
 
-    def land_callback(self,request, response):
-        pass
+    def land_callback(self, request, response):
+        if not self.current_rc_control.arm_state:
+            response.success = False
+            response.message = "Rejected: Drone disarmed."
+            self.get_logger().error(response.message)
+            return response
+    
+        if not self.is_in_air:
+            response.success = False
+            response.message = "Rejected: Drone is already on the ground."
+            self.get_logger().warn(response.message)
+            return response
+        
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        self.offboard_mode_allowed = False
+        self.is_taking_off = False
+
+        response.success = True
+        response.message = "Landing sequence initiated."
+        self.get_logger().info(response.message)
+        return response
          
 
     def timer_callback(self):
@@ -161,23 +195,25 @@ class VehicleControlNode(Node):
             self.armed_state_sent = False
             self.is_taking_off = False
             self.is_in_air = False
+            self.offboard_mode_allowed = True
             self.offboard_setpoint_counter = 0
             self.get_logger().info("Disarm command sent -> Reset to HOLD")
 
-
         if self.is_taking_off:
-            current_rel_alt = self.current_global_alt - self.takeoff_start_alt
-            
-            if current_rel_alt >= (self.current_setpoint_height * 0.95):
+            current_agl = self.min_lidar_distance
+            if current_agl != float('inf') and current_agl >= (self.current_setpoint_height * 0.95):
                 self.is_taking_off = False
                 self.is_in_air = True
-                
-                
-                self.get_logger().info("Takeoff Complete -> Switched to POSITION MODE. Waiting for RC reset.")
-            
+                self.get_logger().info(f"LIDAR Target Reached ({current_agl:.2f}m). Waiting for RC Offboard switch reset.")
             return
 
-        if self.current_rc_control.offboard_state:
+        if not self.current_rc_control.offboard_state:
+            if not self.offboard_mode_allowed:
+                self.get_logger().info("Offboard switch detected OFF. System UNLOCKED for Offboard.", throttle_duration_sec=5.0)
+            self.offboard_mode_allowed = True
+            self.offboard_setpoint_counter = 0
+        
+        if self.current_rc_control.offboard_state and self.offboard_mode_allowed:
 
             offboard_msg = OffboardControlMode()
             offboard_msg.timestamp = timestamp
@@ -197,18 +233,23 @@ class VehicleControlNode(Node):
             self.rates_setpoint_publisher_.publish(rates_msg)
 
             self.offboard_setpoint_counter += 1
-                        
+            
             if self.offboard_setpoint_counter > 20:
-                if self.offboard_setpoint_counter % 25 == 0:
-                    self.publish_vehicle_command(
-                        VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
-                        param1=1.0,
-                        param2=6.0 
-                    )
-                    if self.offboard_setpoint_counter % 125 == 0:
-                        self.get_logger().info(f"Sending OFFBOARD switch command... (Cnt: {self.offboard_setpoint_counter})")
-        else:
-            self.offboard_setpoint_counter = 0
+                
+                if self.current_nav_state != 14:
+                    if self.offboard_setpoint_counter % 5 == 0:
+                        self.publish_vehicle_command(
+                            VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
+                            param1=1.0,
+                            param2=6.0 
+                        )
+                        self.get_logger().info(f"Attempting to switch OFFBOARD... (NavState: {self.current_nav_state})")
+                else:
+                    pass
+
+        elif self.current_rc_control.offboard_state and not self.offboard_mode_allowed:
+             self.get_logger().warn("Safety Lock: Please toggle Offboard Switch to OFF first!", throttle_duration_sec=2.0)
+             self.offboard_setpoint_counter = 0
         
         
     def publish_vehicle_command(self,command,param1=0.0,param2=0.0,param3=0.0,param4=0.0,param5=0.0,param6=0.0,param7=0.0):
