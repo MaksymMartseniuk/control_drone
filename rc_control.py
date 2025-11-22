@@ -94,7 +94,7 @@ class RCControlNode(Node):
         self.target_pitch_rate = 0.0
         self.target_yaw_rate = 0.0
 
-        self.timer_period = 0.01
+        self.timer_period = 0.02
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
 
         self.key_listener_thread = threading.Thread(target=self.key_listener, daemon=True)
