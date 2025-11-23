@@ -7,6 +7,7 @@ from ros_px4_my.msg import RCControl
 from ros_px4_my.srv import TakeOff, Land, ServoCommand
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float64
+import threading
 
 
 class VehicleControlNode(Node):
@@ -112,9 +113,18 @@ class VehicleControlNode(Node):
     def servo_callback(self,request,response):
         safe_angle = max(-1.57, min(1.57, request.angle))
         self.current_servo_angle=safe_angle
+        self.current_servo_angle = safe_angle
+        self.get_logger().info(f"Servo OPENING to {safe_angle:.2f} rad")
+
+        def return_servo_back():
+            self.current_servo_angle = 0.0
+            self.get_logger().info("Servo CLOSING (Auto-reset)")
+        
+        timer = threading.Timer(1.0, return_servo_back)
+        timer.start()
+
         response.success = True
-        response.message = f"Servo set to {safe_angle:.2f} rad"
-        self.get_logger().info(response.message)
+        response.message = "Drop initiated (Auto-reset scheduled)"
         return response
 
 
