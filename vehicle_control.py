@@ -4,8 +4,9 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDur
 from rclpy.executors import MultiThreadedExecutor
 from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus
 from ros_px4_my.msg import RCControl 
-from ros_px4_my.srv import TakeOff, Land
+from ros_px4_my.srv import TakeOff, Land, ServoCommand
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float64
 
 
 class VehicleControlNode(Node):
@@ -34,7 +35,13 @@ class VehicleControlNode(Node):
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_reliable)
         
         self.rates_setpoint_publisher_ = self.create_publisher(
-            VehicleRatesSetpoint, '/fmu/in/vehicle_rates_setpoint', qos_best_effort) 
+            VehicleRatesSetpoint, '/fmu/in/vehicle_rates_setpoint', qos_best_effort)
+        
+        self.servo_publisher=self.create_publisher(
+            Float64,
+            '/servo_cmd',
+            qos_reliable
+        )
         
         # ---SUBSCRIBERS---
         self.rc_command_subscriber = self.create_subscription(
@@ -64,6 +71,7 @@ class VehicleControlNode(Node):
         # ---SERVICE---
         self.takeoff_service = self.create_service(TakeOff, 'takeoff_command/drone', self.takeoff_callback)
         self.land_service = self.create_service(Land, 'land_command/drone', self.land_callback)
+        self.servo_service=self.create_service(ServoCommand,'servo_command/drone',self.servo_callback)
         
         # ---LOCALSTATE---
         self.armed_state_sent = False 
@@ -80,6 +88,8 @@ class VehicleControlNode(Node):
         
         self.current_nav_state = 0 
 
+        self.current_servo_angle = 0.0
+
         self.current_rc_control = RCControl()
 
         self.timer = self.create_timer(0.02, self.timer_callback)
@@ -88,6 +98,15 @@ class VehicleControlNode(Node):
 
     def rc_command_callback(self,msg:RCControl):
         self.current_rc_control=msg
+
+    def servo_callback(self,request,response):
+        safe_angle = max(-1.57, min(1.57, request.angle))
+        self.current_servo_angle=safe_angle
+        response.success = True
+        response.message = f"Servo set to {safe_angle:.2f} rad"
+        self.get_logger().info(response.message)
+        return response
+
 
     def global_position_callback(self,msg:VehicleGlobalPosition):
         self.current_global_alt = msg.alt
@@ -175,6 +194,10 @@ class VehicleControlNode(Node):
         if not rclpy.ok():
             return
         
+        servo_msg = Float64()
+        servo_msg.data = self.current_servo_angle
+        self.servo_publisher.publish(servo_msg)
+
         timestamp = int(self.get_clock().now().nanoseconds / 1000)
         
         if self.current_rc_control.arm_state and not self.armed_state_sent:
@@ -197,6 +220,7 @@ class VehicleControlNode(Node):
             self.is_in_air = False
             self.offboard_mode_allowed = True
             self.offboard_setpoint_counter = 0
+            self.current_servo_angle = 0.0
             self.get_logger().info("Disarm command sent -> Reset to HOLD")
 
         if self.is_taking_off:

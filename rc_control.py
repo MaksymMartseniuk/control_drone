@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from ros_px4_my.msg import RCControl
-from ros_px4_my.srv import TakeOff, Land
+from ros_px4_my.srv import TakeOff, Land,ServoCommand
 import sys
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 import threading
@@ -61,7 +61,7 @@ def restore_terminal_settings(old_settings):
 class RCControlNode(Node):
     def __init__(self):
         super().__init__('rc_control_node')
-        print(msg)
+        self.get_logger().info(f"{msg}")
 
         qos_reliable = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -76,6 +76,8 @@ class RCControlNode(Node):
         # ---CLIENTS---
         self.takeoff_client = self.create_client(TakeOff, 'takeoff_command/drone')
         self.land_client = self.create_client(Land, 'land_command/drone')
+
+        self.servo_client=self.create_client(ServoCommand,"servo_command/drone")
 
         # ---LOCAL STATE---
         self.arm_state = False
@@ -165,6 +167,10 @@ class RCControlNode(Node):
                 
                 elif key.lower() == 'r':
                     self.reset_controls()
+                
+                elif key.lower()=='c':
+                    self.servo_command()
+
                 elif self.arm_state:
                     if key in move_actions:
                         move_actions[key]()
@@ -189,7 +195,7 @@ class RCControlNode(Node):
             f"Y:{self.target_yaw_rate:.1f} || "
             f"MSG: {self.status_message}"
         )
-        sys.stdout.write(f"\r{status_str:<100}")
+        sys.stdout.write(f"\r{status_str}\033[K")
         sys.stdout.flush()
 
     def takeoff_drone_command(self):
@@ -241,7 +247,32 @@ class RCControlNode(Node):
             except:
                 pass
                 
-        future.add_done_callback(response_callback)    
+        future.add_done_callback(response_callback)  
+
+    def servo_command(self):
+        if not self.arm_state:
+            self.status_message = "ERR: Arm before dropping!"
+            return
+        
+        if not self.servo_client.wait_for_service(timeout_sec=0.5):
+            self.status_message = "ERR: Service Unavailable"
+            return
+        self.status_message = "Dropping payload..."
+        req=ServoCommand.Request()
+        req.angle = 1.57
+        future=self.servo_client.call_async(req)
+        def response_callback(fut):
+            try:
+                resp=fut.result()
+                if resp.success:
+                    self.status_message = "Payload DROPPED!"
+                else:
+                    self.status_message = f"Drop Fail: {resp.message}"
+            except Exception as e:
+                self.status_message = f"Service Error: {str(e)}"
+        future.add_done_callback(response_callback)
+
+          
 
 def main(args=None):
     old_settings = save_terminal_settings()
