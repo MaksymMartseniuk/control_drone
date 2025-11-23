@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
-from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus
+from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus,VehicleLandDetected
 from ros_px4_my.msg import RCControl 
 from ros_px4_my.srv import TakeOff, Land, ServoCommand
 from sensor_msgs.msg import LaserScan
@@ -67,6 +67,13 @@ class VehicleControlNode(Node):
             self.lidar_callback,
             qos_best_effort
         )
+
+        self.vehicle_land_detector=self.create_subscription(
+            VehicleLandDetected,
+            'fmu/out/vehicle_land_detected',
+            self.land_detected_callback,
+            qos_best_effort
+        )
         
         # ---SERVICE---
         self.takeoff_service = self.create_service(TakeOff, 'takeoff_command/drone', self.takeoff_callback)
@@ -95,6 +102,9 @@ class VehicleControlNode(Node):
         self.timer = self.create_timer(0.02, self.timer_callback)
         
         self.get_logger().info("VehicleControlNode initialized.")
+
+    def land_detected_callback(self,msg:VehicleLandDetected):
+        self.is_in_air = not msg.landed
 
     def rc_command_callback(self,msg:RCControl):
         self.current_rc_control=msg
@@ -217,7 +227,6 @@ class VehicleControlNode(Node):
             
             self.armed_state_sent = False
             self.is_taking_off = False
-            self.is_in_air = False
             self.offboard_mode_allowed = True
             self.offboard_setpoint_counter = 0
             self.current_servo_angle = 0.0
@@ -227,7 +236,6 @@ class VehicleControlNode(Node):
             current_agl = self.min_lidar_distance
             if current_agl != float('inf') and current_agl >= (self.current_setpoint_height * 0.95):
                 self.is_taking_off = False
-                self.is_in_air = True
                 self.get_logger().info(f"LIDAR Target Reached ({current_agl:.2f}m). Waiting for RC Offboard switch reset.")
             return
 
