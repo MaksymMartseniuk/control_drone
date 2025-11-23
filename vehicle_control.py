@@ -2,12 +2,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
-from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus,VehicleLandDetected
+from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus,VehicleLandDetected,Mission
 from ros_px4_my.msg import RCControl 
-from ros_px4_my.srv import TakeOff, Land, ServoCommand
+from ros_px4_my.srv import TakeOff, Land, ServoCommand,MissionCommand
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float64
 import threading
+import json
 
 
 class VehicleControlNode(Node):
@@ -80,6 +81,7 @@ class VehicleControlNode(Node):
         self.takeoff_service = self.create_service(TakeOff, 'takeoff_command/drone', self.takeoff_callback)
         self.land_service = self.create_service(Land, 'land_command/drone', self.land_callback)
         self.servo_service=self.create_service(ServoCommand,'servo_command/drone',self.servo_callback)
+        self.mission_service=self.create_service(MissionCommand,'mission_command/drone',self.mission_callback)
         
         # ---LOCALSTATE---
         self.armed_state_sent = False 
@@ -110,6 +112,24 @@ class VehicleControlNode(Node):
     def rc_command_callback(self,msg:RCControl):
         self.current_rc_control=msg
 
+
+
+    def global_position_callback(self,msg:VehicleGlobalPosition):
+        self.current_global_alt = msg.alt
+
+    def vehicle_status_callback(self, msg: VehicleStatus):
+        self.current_nav_state = msg.nav_state
+
+    def mission_callback(self,request,response):
+        file_path = request.file_path_str
+        self.get_logger().info(f"Received mission request for: {file_path}")
+        try:
+            with open(file_path, 'r') as f:
+                mission_data = json.load(f)
+            mission=Mission(mission_data)
+    
+
+
     def servo_callback(self,request,response):
         safe_angle = max(-1.57, min(1.57, request.angle))
         self.current_servo_angle=safe_angle
@@ -126,13 +146,6 @@ class VehicleControlNode(Node):
         response.success = True
         response.message = "Drop initiated (Auto-reset scheduled)"
         return response
-
-
-    def global_position_callback(self,msg:VehicleGlobalPosition):
-        self.current_global_alt = msg.alt
-
-    def vehicle_status_callback(self, msg: VehicleStatus):
-        self.current_nav_state = msg.nav_state
 
     def lidar_callback(self,msg:LaserScan):
         if msg.ranges:

@@ -1,11 +1,12 @@
 import rclpy
 from rclpy.node import Node
 from ros_px4_my.msg import RCControl
-from ros_px4_my.srv import TakeOff, Land,ServoCommand
+from ros_px4_my.srv import TakeOff, Land,ServoCommand,MissionCommand
 import sys
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 import threading
 import time
+from pathlib import Path
 
 if sys.platform == 'win32':
     import msvcrt
@@ -26,6 +27,8 @@ Space: Arm / Disarm
 Q: Перемикач Offboard (Тільки якщо ARMED)
 T: Takeoff (Зліт)
 L: Land (Посадка)
+C:
+M:Mission 
 
 CTRL-C: Вихід
 ===================================
@@ -78,6 +81,7 @@ class RCControlNode(Node):
         self.land_client = self.create_client(Land, 'land_command/drone')
 
         self.servo_client=self.create_client(ServoCommand,"servo_command/drone")
+        self.mission_client = self.create_client(MissionCommand, 'mission_command/drone')
 
         # ---LOCAL STATE---
         self.arm_state = False
@@ -93,6 +97,8 @@ class RCControlNode(Node):
         self.target_roll_rate = 0.0
         self.target_pitch_rate = 0.0
         self.target_yaw_rate = 0.0
+
+        self.in_menu = False
 
         self.status_message = "Ready"
 
@@ -118,8 +124,8 @@ class RCControlNode(Node):
         rc_control_msg.target_roll_rate = self.target_roll_rate
         rc_control_msg.target_pitch_rate = self.target_pitch_rate
         rc_control_msg.target_yaw_rate = self.target_yaw_rate
-
-        self.rc_command_publisher.publish(rc_control_msg)
+        if not self.in_menu:
+            self.rc_command_publisher.publish(rc_control_msg)
 
     def key_listener(self):
         move_actions = {
@@ -135,6 +141,12 @@ class RCControlNode(Node):
         
         try:
             while rclpy.ok():
+                
+
+                if self.in_menu:
+                    time.sleep(0.1)
+                    continue
+
                 key = get_key()
                 
                 if key == '\x03': # CTRL-C
@@ -171,6 +183,9 @@ class RCControlNode(Node):
                 elif key.lower()=='c':
                     self.servo_command()
 
+                elif key.lower()=='m':
+                    self.mission_command()
+
                 elif self.arm_state:
                     if key in move_actions:
                         move_actions[key]()
@@ -183,7 +198,7 @@ class RCControlNode(Node):
                 self.print_status_on_one_line()
                 
         except Exception as e:
-            pass
+            self.get_logger().info(f'{e}')
 
     def print_status_on_one_line(self):
         status_str = (
@@ -272,7 +287,49 @@ class RCControlNode(Node):
                 self.status_message = f"Service Error: {str(e)}"
         future.add_done_callback(response_callback)
 
-          
+    def mission_command(self):
+        self.in_menu = True
+        sys.stdout.write("\r" + " " * 100 + "\r")
+        sys.stdout.flush()
+        self.get_logger().info("\n--- MENU: SELECT MISSION FILE ---")
+        mission_dir=Path("~/Documents/QGroundControl/Missions").expanduser()
+        if not mission_dir.exists():
+            mission_dir.mkdir(parents=True, exist_ok=True)
+            self.get_logger().info(f"Created folder: {mission_dir.absolute()}")
+            time.sleep(2)
+            self.in_menu = False
+            return
+        files = list(mission_dir.glob("*.plan"))
+        if not files:
+            self.get_logger().warn("No .plan files found in 'missions' folder!")
+            self.get_logger().info("Press ENTER to return...")
+            input()
+            self.in_menu = False
+            return
+        for idx, file in enumerate(files):
+            print(f"[{idx}] {file.name}")
+        print("---------------------------------")
+        selection = input("Enter number (or 'c' to cancel): ")
+
+        if selection.lower() == 'c':
+            self.get_logger().warn("Cancelled.")
+            self.in_menu = False
+            return
+        
+        file_index = int(selection)
+        if 0 <= file_index < len(files):
+            selected_file=files[file_index]
+            self.get_logger().info(f" {selected_file.name}...")
+            if not self.mission_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().error("Vehicle Node not ready!")
+                self.in_menu = False
+                return
+            else:
+                req=MissionCommand.Request()
+                req.file_path_str = str(selected_file.absolute())
+                future = self.mission_client.call_async(req)
+                self.status_message = f"Sent mission: {selected_file.name}"
+        self.in_menu = False
 
 def main(args=None):
     old_settings = save_terminal_settings()
