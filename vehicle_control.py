@@ -5,14 +5,18 @@ from rclpy.executors import MultiThreadedExecutor
 from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus,VehicleLandDetected
 from ros_px4_my.msg import RCControl 
 from ros_px4_my.srv import TakeOff, Land, ServoCommand
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan,Image
 from std_msgs.msg import Float64
 import threading
+import cv2
+from cv_bridge import CvBridge
 
 
 class VehicleControlNode(Node):
     def __init__(self):
         super().__init__('vehicle_control_node')
+
+        self.bridge = CvBridge()
         
         qos_reliable = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -41,6 +45,16 @@ class VehicleControlNode(Node):
         self.servo_publisher=self.create_publisher(
             Float64,
             '/servo_cmd',
+            qos_reliable
+        )
+        self.mount_rad_publisher = self.create_publisher(
+            Float64, 
+            '/camera_mount_cmd', 
+            qos_reliable
+        )
+        self.pole_rad_publisher = self.create_publisher(
+            Float64,
+            '/camera_pole_cmd',
             qos_reliable
         )
         
@@ -73,6 +87,13 @@ class VehicleControlNode(Node):
             VehicleLandDetected,
             'fmu/out/vehicle_land_detected',
             self.land_detected_callback,
+            qos_best_effort
+        )
+
+        self.camera_subscriber = self.create_subscription(
+            Image,
+            'camera/image',
+            self.camera_callback,
             qos_best_effort
         )
         
@@ -109,6 +130,14 @@ class VehicleControlNode(Node):
 
     def rc_command_callback(self,msg:RCControl):
         self.current_rc_control=msg
+
+    def camera_callback(self,msg:Image):
+        try:
+            cv_image=self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv2.imshow("Camera Feed",cv_image)
+            cv2.waitKey(1)
+        except Exception as e:
+            self.get_logger().error(f"Error converting image: {e}")
 
     def servo_callback(self,request,response):
         safe_angle = max(-1.57, min(1.57, request.angle))
@@ -213,7 +242,21 @@ class VehicleControlNode(Node):
     def timer_callback(self):
         if not rclpy.ok():
             return
-        
+        try:
+            mount_msg = Float64()
+            mount_msg.data = self.current_rc_control.target_mount_rad
+            self.mount_rad_publisher.publish(mount_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publishing mount command: {e}")
+
+        try:
+            pole_msg = Float64()
+            pole_msg.data = self.current_rc_control.target_pole_rad
+            self.pole_rad_publisher.publish(pole_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publishing pole command: {e}")
+
+            
         servo_msg = Float64()
         servo_msg.data = self.current_servo_angle
         self.servo_publisher.publish(servo_msg)
@@ -292,6 +335,7 @@ class VehicleControlNode(Node):
         elif self.current_rc_control.offboard_state and not self.offboard_mode_allowed:
              self.get_logger().warn("Safety Lock: Please toggle Offboard Switch to OFF first!", throttle_duration_sec=2.0)
              self.offboard_setpoint_counter = 0
+        
         
         
     def publish_vehicle_command(self,command,param1=0.0,param2=0.0,param3=0.0,param4=0.0,param5=0.0,param6=0.0,param7=0.0):

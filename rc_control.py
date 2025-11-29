@@ -95,6 +95,10 @@ class RCControlNode(Node):
         self.target_yaw_rate = 0.0
 
         self.status_message = "Ready"
+        self.target_mount_rad=0.0
+        self.target_pole_rad=0.0
+        self.mount_step = 0.1
+        self.pole_step = 0.1
 
         self.timer_period = 0.02
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
@@ -119,6 +123,9 @@ class RCControlNode(Node):
         rc_control_msg.target_pitch_rate = self.target_pitch_rate
         rc_control_msg.target_yaw_rate = self.target_yaw_rate
 
+        rc_control_msg.target_mount_rad = float(self.target_mount_rad)
+        rc_control_msg.target_pole_rad = float(self.target_pole_rad)
+
         self.rc_command_publisher.publish(rc_control_msg)
 
     def key_listener(self):
@@ -131,6 +138,10 @@ class RCControlNode(Node):
             '\x1b[B': lambda: setattr(self, 'target_pitch_rate', min(self.max_rate, self.target_pitch_rate + self.rate_step)),
             '\x1b[C': lambda: setattr(self, 'target_roll_rate', min(self.max_rate, self.target_roll_rate + self.rate_step)),
             '\x1b[D': lambda: setattr(self, 'target_roll_rate', max(-self.max_rate, self.target_roll_rate - self.rate_step)),
+            '4': lambda: setattr(self, 'target_mount_rad', self.target_mount_rad + self.mount_step),
+            '6': lambda: setattr(self, 'target_mount_rad', self.target_mount_rad - self.mount_step),
+            '8': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad + self.pole_step),
+            '2': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad - self.pole_step),
         }
         
         try:
