@@ -5,18 +5,15 @@ from rclpy.executors import MultiThreadedExecutor
 from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleRatesSetpoint, VehicleGlobalPosition, VehicleStatus,VehicleLandDetected
 from ros_px4_my.msg import RCControl 
 from ros_px4_my.srv import TakeOff, Land, ServoCommand
-from sensor_msgs.msg import LaserScan,Image
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float64
 import threading
-import cv2
-from cv_bridge import CvBridge
 
 
 class VehicleControlNode(Node):
     def __init__(self):
         super().__init__('vehicle_control_node')
 
-        self.bridge = CvBridge()
         
         qos_reliable = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -89,13 +86,6 @@ class VehicleControlNode(Node):
             self.land_detected_callback,
             qos_best_effort
         )
-
-        self.camera_subscriber = self.create_subscription(
-            Image,
-            'camera/image',
-            self.camera_callback,
-            qos_best_effort
-        )
         
         # ---SERVICE---
         self.takeoff_service = self.create_service(TakeOff, 'takeoff_command/drone', self.takeoff_callback)
@@ -130,14 +120,6 @@ class VehicleControlNode(Node):
 
     def rc_command_callback(self,msg:RCControl):
         self.current_rc_control=msg
-
-    def camera_callback(self,msg:Image):
-        try:
-            cv_image=self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            cv2.imshow("Camera Feed",cv_image)
-            cv2.waitKey(1)
-        except Exception as e:
-            self.get_logger().error(f"Error converting image: {e}")
 
     def servo_callback(self,request,response):
         safe_angle = max(-1.57, min(1.57, request.angle))
