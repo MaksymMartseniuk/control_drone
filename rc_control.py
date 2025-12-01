@@ -5,6 +5,10 @@ from ros_px4_my.srv import TakeOff, Land,ServoCommand
 import sys
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 import threading
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import os
 import time
 
 if sys.platform == 'win32':
@@ -79,6 +83,24 @@ class RCControlNode(Node):
 
         self.servo_client=self.create_client(ServoCommand,"servo_command/drone")
 
+        #---CAMERA BRIDGE--
+        self.bridge = CvBridge()
+        self.latest_cv_image = None
+        self.save_dir = 'dataset_images'
+
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
+
+        self.image_count = len([name for name in os.listdir(self.save_dir) if os.path.isfile(os.path.join(self.save_dir, name))])
+
+        # ---SUBSCRIBERS---
+        self.camera_subscriber = self.create_subscription(
+            Image,
+            'camera/image',
+            self.image_callback,
+            10
+        )
+
         # ---LOCAL STATE---
         self.arm_state = False
         self.offboard_state = False
@@ -105,6 +127,33 @@ class RCControlNode(Node):
 
         self.key_listener_thread = threading.Thread(target=self.key_listener, daemon=True)
         self.key_listener_thread.start()
+
+    def image_callback(self, msg):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self.latest_cv_image = cv_image 
+            cv2.imshow("Camera Feed", cv_image)
+            cv2.waitKey(1)
+            
+        except Exception as e:
+            self.get_logger().error(f"Error converting image: {e}")
+    
+    def save_photo(self):
+        if not hasattr(self, 'latest_cv_image') or self.latest_cv_image is None:
+            self.status_message = "ERR: No Image to save!"
+            return
+
+        try:
+            if not os.path.exists(self.save_dir):
+                os.makedirs(self.save_dir)
+            filename = os.path.join(self.save_dir, f'img_{self.image_count:04d}.jpg')
+            cv2.imwrite(filename, self.latest_cv_image)
+            self.status_message = f"Saved: img_{self.image_count:04d}.jpg"
+            self.image_count += 1
+            
+        except Exception as e:
+            self.status_message = f"Save Error: {e}"
+
 
     def reset_controls(self):
         self.throttle_target = 0.0
@@ -142,6 +191,7 @@ class RCControlNode(Node):
             '6': lambda: setattr(self, 'target_mount_rad', self.target_mount_rad - self.mount_step),
             '8': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad + self.pole_step),
             '2': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad - self.pole_step),
+            'p':lambda:self.save_photo()
         }
         
         try:
@@ -220,7 +270,7 @@ class RCControlNode(Node):
         
         self.status_message = "Sending Takeoff..."
         req = TakeOff.Request()
-        req.target_height = 5.0
+        req.target_height = 100.0
         future = self.takeoff_client.call_async(req)
         
         def response_callback(fut):
