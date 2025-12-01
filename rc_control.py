@@ -11,6 +11,8 @@ import cv2
 import os
 import time
 
+from ultralytics import YOLO
+
 if sys.platform == 'win32':
     import msvcrt
 else:
@@ -66,6 +68,15 @@ class RCControlNode(Node):
     def __init__(self):
         super().__init__('rc_control_node')
         self.get_logger().info(f"{msg}")
+
+        self.model_path = YOLO("/home/maksym/code/runs/detect/train2/weights/best.pt")
+        try:
+            self.get_logger().info(f"Loading YOLO model from: {self.model_path}")
+            self.model = YOLO(self.model_path)
+            self.get_logger().info("YOLO model loaded successfully!")
+        except Exception as e:
+            self.get_logger().error(f"FAILED to load YOLO: {e}")
+            self.model = None
 
         qos_reliable = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -132,11 +143,18 @@ class RCControlNode(Node):
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             self.latest_cv_image = cv_image 
-            cv2.imshow("Camera Feed", cv_image)
+
+            if self.model:
+                results = self.model(cv_image, verbose=False)
+                annotated_frame = results[0].plot()
+                cv2.imshow("Camera Feed (YOLO)", annotated_frame)
+            else:
+                cv2.imshow("Camera Feed (Raw)", cv_image)
+
             cv2.waitKey(1)
             
         except Exception as e:
-            self.get_logger().error(f"Error converting image: {e}")
+            self.get_logger().error(f"Error in image_callback: {e}")
     
     def save_photo(self):
         if not hasattr(self, 'latest_cv_image') or self.latest_cv_image is None:
@@ -147,7 +165,9 @@ class RCControlNode(Node):
             if not os.path.exists(self.save_dir):
                 os.makedirs(self.save_dir)
             filename = os.path.join(self.save_dir, f'img_{self.image_count:04d}.jpg')
+            
             cv2.imwrite(filename, self.latest_cv_image)
+            
             self.status_message = f"Saved: img_{self.image_count:04d}.jpg"
             self.image_count += 1
             
