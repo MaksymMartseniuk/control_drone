@@ -3,6 +3,7 @@ from rclpy.node import Node
 from ros_px4_my.msg import RCControl
 from ros_px4_my.srv import TakeOff, Land,ServoCommand
 import sys
+from std_srvs.srv import Trigger
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 import threading
 from sensor_msgs.msg import Image
@@ -11,7 +12,6 @@ import cv2
 import os
 import time
 
-from ultralytics import YOLO
 
 if sys.platform == 'win32':
     import msvcrt
@@ -69,15 +69,6 @@ class RCControlNode(Node):
         super().__init__('rc_control_node')
         self.get_logger().info(f"{msg}")
 
-        self.model_path = YOLO("/home/maksym/code/runs/detect/train2/weights/best.pt")
-        try:
-            self.get_logger().info(f"Loading YOLO model from: {self.model_path}")
-            self.model = YOLO(self.model_path)
-            self.get_logger().info("YOLO model loaded successfully!")
-        except Exception as e:
-            self.get_logger().error(f"FAILED to load YOLO: {e}")
-            self.model = None
-
         qos_reliable = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -94,23 +85,7 @@ class RCControlNode(Node):
 
         self.servo_client=self.create_client(ServoCommand,"servo_command/drone")
 
-        #---CAMERA BRIDGE--
-        self.bridge = CvBridge()
-        self.latest_cv_image = None
-        self.save_dir = 'dataset_images'
-
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-
-        self.image_count = len([name for name in os.listdir(self.save_dir) if os.path.isfile(os.path.join(self.save_dir, name))])
-
-        # ---SUBSCRIBERS---
-        self.camera_subscriber = self.create_subscription(
-            Image,
-            'camera/image',
-            self.image_callback,
-            10
-        )
+        self.make_photo_client=self.create_client(Trigger, "camera/save_camera_photo")
 
         # ---LOCAL STATE---
         self.arm_state = False
@@ -138,43 +113,7 @@ class RCControlNode(Node):
 
         self.key_listener_thread = threading.Thread(target=self.key_listener, daemon=True)
         self.key_listener_thread.start()
-
-    def image_callback(self, msg):
-        try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            self.latest_cv_image = cv_image 
-
-            if self.model:
-                results = self.model(cv_image, verbose=False)
-                annotated_frame = results[0].plot()
-                cv2.imshow("Camera Feed (YOLO)", annotated_frame)
-            else:
-                cv2.imshow("Camera Feed (Raw)", cv_image)
-
-            cv2.waitKey(1)
-            
-        except Exception as e:
-            self.get_logger().error(f"Error in image_callback: {e}")
     
-    def save_photo(self):
-        if not hasattr(self, 'latest_cv_image') or self.latest_cv_image is None:
-            self.status_message = "ERR: No Image to save!"
-            return
-
-        try:
-            if not os.path.exists(self.save_dir):
-                os.makedirs(self.save_dir)
-            filename = os.path.join(self.save_dir, f'img_{self.image_count:04d}.jpg')
-            
-            cv2.imwrite(filename, self.latest_cv_image)
-            
-            self.status_message = f"Saved: img_{self.image_count:04d}.jpg"
-            self.image_count += 1
-            
-        except Exception as e:
-            self.status_message = f"Save Error: {e}"
-
-
     def reset_controls(self):
         self.throttle_target = 0.0
         self.target_roll_rate = 0.0
@@ -211,7 +150,7 @@ class RCControlNode(Node):
             '6': lambda: setattr(self, 'target_mount_rad', self.target_mount_rad - self.mount_step),
             '8': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad + self.pole_step),
             '2': lambda: setattr(self, 'target_pole_rad', self.target_pole_rad - self.pole_step),
-            'p':lambda:self.save_photo()
+            'p': lambda:self.call_save_photo()
         }
         
         try:
@@ -352,6 +291,22 @@ class RCControlNode(Node):
             except Exception as e:
                 self.status_message = f"Service Error: {str(e)}"
         future.add_done_callback(response_callback)
+    
+    def call_save_photo(self):
+        if not self.make_photo_client.wait_for_service(timeout_sec=1.0):
+            self.status_message = "ERR: Photo service not available"
+            return
+        req = Trigger.Request()
+        future = self.photo_client.call_async(req)
+
+        def callback(fut):
+            try:
+                res = fut.result()
+                self.status_message = res.message
+            except Exception as e:
+                self.status_message = f"Photo Service Error: {e}"
+        
+        future.add_done_callback(callback)
 
           
 
